@@ -88,11 +88,51 @@ async def _seed_catalog(client: httpx.AsyncClient) -> None:
     resp.raise_for_status()
     catalog = resp.json().get("catalog", resp.json())
     llm = catalog.get("services", {}).get("llm", {})
-    if llm.get("profiles"):
-        log.info("model catalog already has an LLM profile; leaving it as-is")
-        return
+    profiles = list(llm.get("profiles") or [])
+
+    def _is_empty_key(profile: dict[str, Any]) -> bool:
+        return not str(profile.get("api_key") or "").strip()
+
+    async def _put_catalog() -> None:
+        catalog.setdefault("services", {})["llm"] = llm
+        put = await client.put(
+            f"{DEEPTUTOR_BASE}/api/v1/settings/catalog",
+            json={"catalog": catalog},
+        )
+        put.raise_for_status()
+
+    if profiles:
+        # Refresh empty keys when env now has one; otherwise a first boot
+        # without a key permanently sticks "" into deeptutor-data.
+        if LLM_API_KEY:
+            refreshed = 0
+            for profile in profiles:
+                if _is_empty_key(profile):
+                    profile["api_key"] = LLM_API_KEY
+                    profile["binding"] = LLM_BINDING
+                    profile["base_url"] = LLM_BASE_URL
+                    refreshed += 1
+            if refreshed:
+                await _put_catalog()
+                log.info(
+                    "refreshed empty api_key on %d LLM profile(s) from env",
+                    refreshed,
+                )
+                return
+        if any(not _is_empty_key(p) for p in profiles):
+            log.info("model catalog already has an LLM profile; leaving it as-is")
+            return
+        raise RuntimeError(
+            "LLM catalog has only empty api_key profiles and no "
+            "OPENAI_API_KEY / DEEPTUTOR_LLM_API_KEY is set"
+        )
+
     if not LLM_API_KEY:
-        log.warning("no LLM API key in env; tutor replies will fail until one is configured")
+        raise RuntimeError(
+            "no LLM API key in env; set OPENAI_API_KEY or DEEPTUTOR_LLM_API_KEY "
+            "before starting the DeepTutor sidecar"
+        )
+
     profile_id = f"llm-profile-{uuid.uuid4().hex[:8]}"
     model_id = f"llm-model-{uuid.uuid4().hex[:8]}"
     llm["profiles"] = [
@@ -109,11 +149,7 @@ async def _seed_catalog(client: httpx.AsyncClient) -> None:
     ]
     llm["active_profile_id"] = profile_id
     llm["active_model_id"] = model_id
-    catalog.setdefault("services", {})["llm"] = llm
-    resp = await client.put(
-        f"{DEEPTUTOR_BASE}/api/v1/settings/catalog", json={"catalog": catalog}
-    )
-    resp.raise_for_status()
+    await _put_catalog()
     log.info("seeded LLM profile binding=%s model=%s", LLM_BINDING, LLM_MODEL)
 
 

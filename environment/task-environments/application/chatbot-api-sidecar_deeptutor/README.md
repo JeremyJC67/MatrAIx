@@ -22,7 +22,10 @@ On first request (idempotent, lock-guarded):
 2. **Seeds the model catalog** (`PUT /api/v1/settings/catalog`) with one LLM
    profile built from env — DeepTutor normally requires this via its web
    Settings UI; seeding it via API is what makes the sidecar reproducible
-   headlessly. Existing profiles are never overwritten.
+   headlessly. Existing profiles with a real key are left as-is; the one
+   exception is a profile whose `api_key` is empty (e.g. seeded on a first
+   boot before a key was available in the `deeptutor-data` volume) — its key
+   is refreshed from env so a later start with a real key recovers.
 3. **Ensures a tutor partner exists** (`POST /api/v1/partners`, `start: true`)
    with a neutral adaptive-tutor description.
 
